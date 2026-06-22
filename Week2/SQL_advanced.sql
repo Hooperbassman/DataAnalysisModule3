@@ -17,7 +17,47 @@ USE coffeeshop_db;
 -- Filter to orders where order_total is greater than the average PAID order_total
 -- for THAT SAME store (correlated subquery).
 -- Sort by store_name, then order_total DESC.
-
+select o.order_id,
+    concat(c.last_name, ', ', c.first_name) as customer_name,
+    s.name as store_name,
+    o.order_datetime,
+    SUM(oi.quantity * p.price) as order_total
+from orders o
+join customers c
+    on o.customer_id = c.customer_id
+join stores s
+    on o.store_id = s.store_id
+join order_items oi
+    on o.order_id = oi.order_id
+join products p
+    on oi.product_id = p.product_id
+where o.status = 'paid'
+group by
+    o.order_id,
+    c.last_name,
+    c.first_name,
+    s.name,
+    o.order_datetime,
+    o.store_id
+having SUM(oi.quantity * p.price) >
+(
+    select avg(order_total)
+    from (
+        select
+            sum(oi2.quantity * p2.price) as order_total
+        from orders o2
+        join order_items oi2
+            on o2.order_id = oi2.order_id
+        join products p2
+            on oi2.product_id = p2.product_id
+        where o2.status = 'paid'
+          and o2.store_id = o.store_id
+        group by o2.order_id
+    ) store_orders
+)
+order by
+    s.name,
+    order_total desc;
 -- =========================================================
 -- Q2) CTE: Daily revenue and 3-day rolling average (PAID only)
 -- =========================================================
@@ -28,7 +68,37 @@ USE coffeeshop_db;
 --   rolling_3day_avg = average of revenue_day over the current day and the prior 2 days.
 -- Use a window function for the rolling average.
 -- Sort by store_name, order_date.
-
+with daily_revenue as (
+    select o.store_id,
+        s.name as store_name,
+        date(o.order_datetime) AS order_date,
+        sum(oi.quantity * p.price) AS revenue_day
+    from orders o
+    join stores s
+        on o.store_id = s.store_id
+    join order_items oi
+        on o.order_id = oi.order_id
+    join products p
+        on oi.product_id = p.product_id
+    where o.status = 'paid'
+    group by
+        o.store_id,
+        s.name,
+        date(o.order_datetime)
+)
+select
+    store_name,
+    order_date,
+    revenue_day,
+    avg(revenue_day) OVER (
+        partition by store_id
+        order by order_date
+        rows between 2 PRECEDING and current row
+    ) as rolling_3day_avg
+from daily_revenue
+order by
+    store_name,
+    order_date;
 -- =========================================================
 -- Q3) Window function: Rank customers by lifetime spend (PAID only)
 -- =========================================================
@@ -37,7 +107,28 @@ USE coffeeshop_db;
 --         spend_rank (DENSE_RANK by total_spend DESC).
 -- Also include percent_of_total = customer's total_spend / total spend of all customers.
 -- Sort by total_spend DESC.
-
+select customer_id, customer_name, total_spend,
+	dense_rank() over (order by total_spend desc) as spend_rank,
+    total_spend / sum(total_spend) over () as percent_of_total
+from (
+    select
+        c.customer_id,
+        concat(c.last_name, ', ', c.first_name) as customer_name,
+        sum(oi.quantity * p.price) as total_spend
+    from customers c
+    join orders o
+        on c.customer_id = o.customer_id
+    join order_items oi
+        on o.order_id = oi.order_id
+    join products p
+        on oi.product_id = p.product_id
+    where o.status = 'paid'
+    group by
+        c.customer_id,
+        c.last_name,
+        c.first_name
+) customer_spend
+order by total_spend desc;
 -- =========================================================
 -- Q4) CTE + window: Top product per store by revenue (PAID only)
 -- =========================================================
